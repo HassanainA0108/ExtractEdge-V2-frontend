@@ -10,16 +10,18 @@ const App = () => {
   const [file, setFile] = useState<File | null>(null);
   const [extractedData, setExtractedData] = useState<ExtractedData | null>(null);
   const [pdfImages, setPdfImages] = useState<string[]>([]);
+  const [annotatedPdf, setAnnotatedPdf] = useState<string | null>(null);  // ← new state
   const [selectedPage, setSelectedPage] = useState<number>(0);
+  const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
-  const [zoomLevel, setZoomLevel] = useState<number>(1);
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.length) {
+    if (e.target.files?.[0]) {
       setFile(e.target.files[0]);
       setExtractedData(null);
       setPdfImages([]);
+      setAnnotatedPdf(null);
       setSelectedPage(0);
       setErrorMsg('');
     }
@@ -28,27 +30,34 @@ const App = () => {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!file) return;
-
     setLoading(true);
     setErrorMsg('');
-
     const formData = new FormData();
     formData.append('file', file);
 
     try {
       const res = await fetch(`${API_BASE}/upload`, { method: 'POST', body: formData });
-      const txt = await res.text();
-      let data: any = {};
-      try { data = JSON.parse(txt); } catch {}
-      if (!res.ok) throw new Error(data.detail || txt || `HTTP ${res.status}`);
-
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
       setExtractedData(data.extracted_data || {});
       setPdfImages(Array.isArray(data.pdf_images) ? data.pdf_images : []);
+      setAnnotatedPdf(data.annotated_pdf || null);
     } catch (err: any) {
       setErrorMsg(err.message || 'Network error');
     } finally {
       setLoading(false);
     }
+  };
+
+  const downloadFile = (content: string, filename: string, mimeType: string) => {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
   };
 
   const generateCSV = (data: ExtractedData) => {
@@ -59,16 +68,6 @@ const App = () => {
     return header + rows;
   };
 
-  const downloadFile = (content: string, filename: string, mimeType: string) => {
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   const handleCellChange = (key: string, value: string) => {
     if (extractedData) {
       setExtractedData({ ...extractedData, [key]: value });
@@ -77,14 +76,10 @@ const App = () => {
 
   return (
     <div className="min-h-screen flex flex-col items-center p-6 bg-gray-50">
-      <h1 className="text-4xl font-bold mb-6 text-red-800">
-        EXTRACT EDGE
-      </h1>
+      <h1 className="text-4xl font-bold mb-6 text-red-800">EXTRACT EDGE</h1>
 
-      <form
-        onSubmit={handleSubmit}
-        className="w-full max-w-lg p-6 rounded-lg bg-red-100 border border-red-200 mb-8"
-      >
+      {/* Upload Form */}
+      <form onSubmit={handleSubmit} className="w-full max-w-lg p-6 rounded-lg bg-red-100 border border-red-200 mb-8">
         <label className="block mb-4">
           <span className="text-base font-medium text-gray-700">Select File</span>
           <input
@@ -95,7 +90,6 @@ const App = () => {
             className="mt-2 w-full border border-gray-300 p-2 rounded bg-white text-gray-800"
           />
         </label>
-
         <button
           type="submit"
           disabled={!file || loading}
@@ -105,78 +99,88 @@ const App = () => {
         </button>
       </form>
 
-      {errorMsg && (
-        <div className="mb-6 text-sm text-red-600">{errorMsg}</div>
-      )}
+      {errorMsg && <div className="mb-6 text-sm text-red-600">{errorMsg}</div>}
 
+      {/* Results + PDF Side by Side */}
       {extractedData && (
-        <div className="w-full max-w-3xl mb-8 bg-white p-6 rounded-lg shadow-sm">
-          <h2 className="text-xl font-bold mb-4 text-gray-800">Results</h2>
-
-          <dl className="grid gap-4 grid-cols-1 sm:grid-cols-2">
-            {Object.entries(extractedData).map(([key, value]) => (
-              <div key={key}>
-                <dt className="text-sm font-medium text-gray-600 mb-1">{key}</dt>
-                <dd className="text-gray-900 bg-gray-100 p-2 rounded">{value}</dd>
-              </div>
-            ))}
-          </dl>
-
-          <div className="flex space-x-4 mt-6">
-            <button
-              onClick={() => downloadFile(JSON.stringify(extractedData, null, 4), 'data.json', 'application/json')}
-              className="flex-1 py-2 rounded bg-red-600 hover:bg-red-700 text-white transition"
-            >
-              Download JSON
-            </button>
-            <button
-              onClick={() => downloadFile(generateCSV(extractedData), 'data.csv', 'text/csv')}
-              className="flex-1 py-2 rounded bg-red-600 hover:bg-red-700 text-white transition"
-            >
-              Download CSV
-            </button>
-          </div>
-        </div>
-      )}
-
-      {pdfImages.length > 0 && (
-        <div className="w-full max-w-4xl">
-          <div className="flex justify-center mb-4 space-x-2">
-            {pdfImages.map((_, i) => (
+        <div className="w-full max-w-6xl flex flex-col lg:flex-row gap-8 mb-8">
+          
+          {/* ── LEFT: Extracted Data */}
+          <div className="flex-1 bg-white p-6 rounded-lg shadow-sm">
+            <h2 className="text-xl font-bold mb-4 text-gray-800">Results</h2>
+            <dl className="grid gap-4 grid-cols-1 sm:grid-cols-2">
+              {Object.entries(extractedData).map(([key, value]) => (
+                <div key={key}>
+                  <dt className="text-sm font-medium text-gray-600 mb-1">{key}</dt>
+                  <dd
+                    className="text-gray-900 bg-gray-100 p-2 rounded"
+                    contentEditable
+                    suppressContentEditableWarning
+                    onBlur={e => handleCellChange(key, e.currentTarget.textContent || '')}
+                  >
+                    {value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <div className="flex space-x-4 mt-6">
               <button
-                key={i}
-                onClick={() => setSelectedPage(i)}
-                className={`px-3 py-1 rounded border ${
-                  i === selectedPage ? 'border-red-600' : 'border-gray-300'
-                } text-gray-700`}
-              >
-                {i + 1}
-              </button>
-            ))}
+                onClick={() => downloadFile(JSON.stringify(extractedData, null, 4), 'data.json', 'application/json')}
+                className="flex-1 py-2 rounded bg-red-600 hover:bg-red-700 text-white transition"
+              >Download JSON</button>
+              <button
+                onClick={() => downloadFile(generateCSV(extractedData), 'data.csv', 'text/csv')}
+                className="flex-1 py-2 rounded bg-red-600 hover:bg-red-700 text-white transition"
+              >Download CSV</button>
+            </div>
           </div>
 
-          <div className="flex justify-center space-x-4 mb-4">
-            <button
-              onClick={() => setZoomLevel((z) => z + 0.1)}
-              className="py-1 px-3 rounded bg-red-600 hover:bg-red-700 text-white transition text-sm"
-            >
-              +
-            </button>
-            <button
-              onClick={() => setZoomLevel((z) => Math.max(0.1, z - 0.1))}
-              className="py-1 px-3 rounded bg-red-600 hover:bg-red-700 text-white transition text-sm"
-            >
-              -
-            </button>
-          </div>
+          {/* ── RIGHT: PDF Preview */}
+          <div className="flex-1">
+            {/* Option A: embed full annotated PDF */}
+            {annotatedPdf && (
+              <div className="mb-4 border rounded-lg overflow-hidden">
+                <object
+                  data={`data:application/pdf;base64,${annotatedPdf}`}
+                  type="application/pdf"
+                  width="100%"
+                  height="600px"
+                >
+                  Your browser does not support embedded PDFs.
+                </object>
+              </div>
+            )}
 
-          <div className="bg-white p-4 rounded-lg shadow-inner overflow-auto">
-            <img
-              src={`data:image/png;base64,${pdfImages[selectedPage]}`}
-              alt={`Page ${selectedPage + 1}`}
-              style={{ transform: `scale(${zoomLevel})` }}
-              className="mx-auto"
-            />
+            {/* Option B: per-page PNG with zoom/buttons */}
+            {pdfImages.length > 0 && (
+              <>
+                <div className="flex justify-center mb-2 space-x-2">
+                  {pdfImages.map((_, i) => (
+                    <button
+                      key={i}
+                      onClick={() => setSelectedPage(i)}
+                      className={`px-3 py-1 rounded border ${
+                        i === selectedPage ? 'border-red-600' : 'border-gray-300'
+                      } text-gray-700 text-sm`}
+                    >
+                      {i + 1}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex justify-center mb-2 space-x-4">
+                  <button onClick={() => setZoomLevel(z => z + 0.1)} className="py-1 px-3 rounded bg-red-600 hover:bg-red-700 text-white">+</button>
+                  <button onClick={() => setZoomLevel(z => Math.max(0.1, z - 0.1))} className="py-1 px-3 rounded bg-red-600 hover:bg-red-700 text-white">-</button>
+                </div>
+                <div className="bg-white p-4 rounded-lg shadow-inner overflow-auto">
+                  <img
+                    src={`data:image/png;base64,${pdfImages[selectedPage]}`}
+                    alt={`Page ${selectedPage + 1}`}
+                    style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'top left' }}
+                    className="origin-top-left mx-auto"
+                  />
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -185,6 +189,198 @@ const App = () => {
 };
 
 export default App;
+
+
+
+
+
+// import { useState, ChangeEvent, FormEvent } from 'react';
+
+// interface ExtractedData {
+//   [key: string]: string;
+// }
+
+// const API_BASE = 'http://localhost:5000';
+
+// const App = () => {
+//   const [file, setFile] = useState<File | null>(null);
+//   const [extractedData, setExtractedData] = useState<ExtractedData | null>(null);
+//   const [pdfImages, setPdfImages] = useState<string[]>([]);
+//   const [selectedPage, setSelectedPage] = useState<number>(0);
+//   const [loading, setLoading] = useState(false);
+//   const [errorMsg, setErrorMsg] = useState<string>('');
+//   const [zoomLevel, setZoomLevel] = useState<number>(1);
+
+//   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+//     if (e.target.files?.length) {
+//       setFile(e.target.files[0]);
+//       setExtractedData(null);
+//       setPdfImages([]);
+//       setSelectedPage(0);
+//       setErrorMsg('');
+//     }
+//   };
+
+//   const handleSubmit = async (e: FormEvent) => {
+//     e.preventDefault();
+//     if (!file) return;
+
+//     setLoading(true);
+//     setErrorMsg('');
+
+//     const formData = new FormData();
+//     formData.append('file', file);
+
+//     try {
+//       const res = await fetch(`${API_BASE}/upload`, { method: 'POST', body: formData });
+//       const txt = await res.text();
+//       let data: any = {};
+//       try { data = JSON.parse(txt); } catch {}
+//       if (!res.ok) throw new Error(data.detail || txt || `HTTP ${res.status}`);
+
+//       setExtractedData(data.extracted_data || {});
+//       setPdfImages(Array.isArray(data.pdf_images) ? data.pdf_images : []);
+//     } catch (err: any) {
+//       setErrorMsg(err.message || 'Network error');
+//     } finally {
+//       setLoading(false);
+//     }
+//   };
+
+//   const generateCSV = (data: ExtractedData) => {
+//     const header = 'Parameter,Value\n';
+//     const rows = Object.entries(data)
+//       .map(([k, v]) => `"${k}","${v}"`)
+//       .join('\n');
+//     return header + rows;
+//   };
+
+//   const downloadFile = (content: string, filename: string, mimeType: string) => {
+//     const blob = new Blob([content], { type: mimeType });
+//     const url = URL.createObjectURL(blob);
+//     const a = document.createElement('a');
+//     a.href = url;
+//     a.download = filename;
+//     a.click();
+//     URL.revokeObjectURL(url);
+//   };
+
+//   const handleCellChange = (key: string, value: string) => {
+//     if (extractedData) {
+//       setExtractedData({ ...extractedData, [key]: value });
+//     }
+//   };
+
+//   return (
+//     <div className="min-h-screen flex flex-col items-center p-6 bg-gray-50">
+//       <h1 className="text-4xl font-bold mb-6 text-red-800">
+//         EXTRACT EDGE
+//       </h1>
+
+//       <form
+//         onSubmit={handleSubmit}
+//         className="w-full max-w-lg p-6 rounded-lg bg-red-100 border border-red-200 mb-8"
+//       >
+//         <label className="block mb-4">
+//           <span className="text-base font-medium text-gray-700">Select File</span>
+//           <input
+//             type="file"
+//             accept=".pdf,.txt,.docx"
+//             onChange={handleFileChange}
+//             disabled={loading}
+//             className="mt-2 w-full border border-gray-300 p-2 rounded bg-white text-gray-800"
+//           />
+//         </label>
+
+//         <button
+//           type="submit"
+//           disabled={!file || loading}
+//           className="w-full py-2 rounded font-semibold bg-red-600 hover:bg-red-700 text-white transition"
+//         >
+//           {loading ? 'Processing...' : 'Upload & Process'}
+//         </button>
+//       </form>
+
+//       {errorMsg && (
+//         <div className="mb-6 text-sm text-red-600">{errorMsg}</div>
+//       )}
+
+//       {extractedData && (
+//         <div className="w-full max-w-3xl mb-8 bg-white p-6 rounded-lg shadow-sm">
+//           <h2 className="text-xl font-bold mb-4 text-gray-800">Results</h2>
+
+//           <dl className="grid gap-4 grid-cols-1 sm:grid-cols-2">
+//             {Object.entries(extractedData).map(([key, value]) => (
+//               <div key={key}>
+//                 <dt className="text-sm font-medium text-gray-600 mb-1">{key}</dt>
+//                 <dd className="text-gray-900 bg-gray-100 p-2 rounded">{value}</dd>
+//               </div>
+//             ))}
+//           </dl>
+
+//           <div className="flex space-x-4 mt-6">
+//             <button
+//               onClick={() => downloadFile(JSON.stringify(extractedData, null, 4), 'data.json', 'application/json')}
+//               className="flex-1 py-2 rounded bg-red-600 hover:bg-red-700 text-white transition"
+//             >
+//               Download JSON
+//             </button>
+//             <button
+//               onClick={() => downloadFile(generateCSV(extractedData), 'data.csv', 'text/csv')}
+//               className="flex-1 py-2 rounded bg-red-600 hover:bg-red-700 text-white transition"
+//             >
+//               Download CSV
+//             </button>
+//           </div>
+//         </div>
+//       )}
+
+//       {pdfImages.length > 0 && (
+//         <div className="w-full max-w-4xl">
+//           <div className="flex justify-center mb-4 space-x-2">
+//             {pdfImages.map((_, i) => (
+//               <button
+//                 key={i}
+//                 onClick={() => setSelectedPage(i)}
+//                 className={`px-3 py-1 rounded border ${
+//                   i === selectedPage ? 'border-red-600' : 'border-gray-300'
+//                 } text-gray-700`}
+//               >
+//                 {i + 1}
+//               </button>
+//             ))}
+//           </div>
+
+//           <div className="flex justify-center space-x-4 mb-4">
+//             <button
+//               onClick={() => setZoomLevel((z) => z + 0.1)}
+//               className="py-1 px-3 rounded bg-red-600 hover:bg-red-700 text-white transition text-sm"
+//             >
+//               +
+//             </button>
+//             <button
+//               onClick={() => setZoomLevel((z) => Math.max(0.1, z - 0.1))}
+//               className="py-1 px-3 rounded bg-red-600 hover:bg-red-700 text-white transition text-sm"
+//             >
+//               -
+//             </button>
+//           </div>
+
+//           <div className="bg-white p-4 rounded-lg shadow-inner overflow-auto">
+//             <img
+//               src={`data:image/png;base64,${pdfImages[selectedPage]}`}
+//               alt={`Page ${selectedPage + 1}`}
+//               style={{ transform: `scale(${zoomLevel})` }}
+//               className="mx-auto"
+//             />
+//           </div>
+//         </div>
+//       )}
+//     </div>
+//   );
+// };
+
+// export default App;
 
 
 
